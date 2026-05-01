@@ -1,0 +1,11 @@
+# Secrets
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Project specific
+KSeF_*.xml
+list_invoices.py
