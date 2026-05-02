@@ -57,18 +57,15 @@ class KsefGenerator:
         d_id2 = ET.SubElement(p2, 'DaneIdentyfikacyjne')
         
         raw_nip = naglowek.adr_NIP.replace('-', '').replace(' ', '') if naglowek.adr_NIP else ''
-        # Official EU member states prefixes + EL for Greece (VIES)
         eu_countries = ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE', 'SI', 'SK']
         
         detected_country = naglowek.adr_SymbolKraju if naglowek.adr_SymbolKraju else 'PL'
-        # Check if first 2 chars are letters (potential country prefix)
         if len(raw_nip) > 2 and raw_nip[:2].isalpha():
             prefix = raw_nip[:2].upper()
             if prefix in eu_countries or prefix == 'PL':
                 detected_country = prefix
                 raw_nip = raw_nip[2:]
             elif prefix != 'PL':
-                # prefix is letters but not EU -> assume it's a foreign country prefix (Export)
                 detected_country = prefix
                 raw_nip = raw_nip[2:]
 
@@ -80,7 +77,6 @@ class KsefGenerator:
             ET.SubElement(d_id2, 'KodUE').text = country
             ET.SubElement(d_id2, 'NrVatUE').text = raw_nip
         else:
-            # All other countries (NO, GB, US, CH, etc.) treated as Export
             ET.SubElement(d_id2, 'KodKraju').text = country
             ET.SubElement(d_id2, 'NrID').text = raw_nip
         
@@ -249,7 +245,7 @@ class KsefGenerator:
             else:
                 if country == 'PL': p12 = '0 KR'
                 elif country in eu_countries: p12 = '0 WDT'
-                else: p12 = '0 EX' # Every country outside EU triggers 0 EX
+                else: p12 = '0 EX' 
                     
             ET.SubElement(wiersz, 'P_12').text = p12
             
