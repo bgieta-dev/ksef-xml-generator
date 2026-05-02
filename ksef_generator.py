@@ -46,7 +46,7 @@ class KsefGenerator:
 
         p1 = ET.SubElement(root, 'Podmiot1')
         d_id1 = ET.SubElement(p1, 'DaneIdentyfikacyjne')
-        ET.SubElement(d_id1, 'NIP').text = moja_firma.adr_NIP.replace('-', '')
+        ET.SubElement(d_id1, 'NIP').text = moja_firma.adr_NIP.replace('-', '').replace(' ', '')
         ET.SubElement(d_id1, 'Nazwa').text = moja_firma.adr_Nazwa
         adr1 = ET.SubElement(p1, 'Adres')
         ET.SubElement(adr1, 'KodKraju').text = moja_firma.adr_SymbolKraju if moja_firma.adr_SymbolKraju else 'PL'
@@ -55,15 +55,26 @@ class KsefGenerator:
 
         p2 = ET.SubElement(root, 'Podmiot2')
         d_id2 = ET.SubElement(p2, 'DaneIdentyfikacyjne')
-        country = naglowek.adr_SymbolKraju if naglowek.adr_SymbolKraju else 'PL'
         
         raw_nip = naglowek.adr_NIP.replace('-', '').replace(' ', '') if naglowek.adr_NIP else ''
         eu_countries = ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE', 'SI', 'SK']
+        
+        # Heurystyka wykrywania kraju z NIP
+        detected_country = naglowek.adr_SymbolKraju if naglowek.adr_SymbolKraju else 'PL'
+        if len(raw_nip) > 2 and raw_nip[:2].isalpha():
+            prefix = raw_nip[:2].upper()
+            if prefix in eu_countries or prefix == 'PL':
+                detected_country = prefix
+                raw_nip = raw_nip[2:]
+            elif prefix == 'EL':
+                detected_country = 'EL'
+                raw_nip = raw_nip[2:]
+
+        country = detected_country
 
         if country == 'PL':
-            clean_pl = raw_nip[2:] if raw_nip.upper().startswith('PL') else raw_nip
-            ET.SubElement(d_id2, 'NIP').text = clean_pl
-        elif country in eu_countries:
+            ET.SubElement(d_id2, 'NIP').text = raw_nip
+        elif country in eu_countries or country == 'EL':
             ET.SubElement(d_id2, 'KodUE').text = country
             ET.SubElement(d_id2, 'NrVatUE').text = raw_nip
         else:
@@ -82,38 +93,67 @@ class KsefGenerator:
         currency = naglowek.dok_Waluta if naglowek.dok_Waluta else 'PLN'
         kurs_nbp = self._get_nbp_rate(currency)
         
+        today = datetime.now()
+        today_str = today.strftime('%Y-%m-%d')
+        
         ET.SubElement(fa, 'KodWaluty').text = currency
-        ET.SubElement(fa, 'P_1').text = datetime.now().strftime('%Y-%m-%d')
+        ET.SubElement(fa, 'P_1').text = today_str
         ET.SubElement(fa, 'P_1M').text = moja_firma.adr_Miejscowosc
         ET.SubElement(fa, 'P_2').text = naglowek.dok_NrPelny
         if naglowek.dok_DataMag:
-            ET.SubElement(fa, 'P_6').text = naglowek.dok_DataMag.strftime('%Y-%m-%d')
+            data_sprzedazy = naglowek.dok_DataMag
+            if data_sprzedazy > today:
+                data_sprzedazy = today
+            ET.SubElement(fa, 'P_6').text = data_sprzedazy.strftime('%Y-%m-%d')
 
         pozycje_sorted = sorted(pozycje, key=lambda x: x.vat_Stawka if x.vat_Stawka is not None else 0, reverse=True)
 
         vat_summary = {}
-        total_netto = Decimal('0.00')
-        total_vat = Decimal('0.00')
+        total_netto_wal = Decimal('0.00')
+        total_vat_wal = Decimal('0.00')
         has_reverse_charge = False
+        has_exempt = False
+        has_wdt = False
+        has_export = False
+        has_np = False
 
         for poz in pozycje_sorted:
-            netto = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            vat = Decimal(str(poz.ob_WartVat)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            netto_row_wal = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            vat_row_wal = Decimal(str(poz.ob_WartVat)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             stawka = int(poz.vat_Stawka) if poz.vat_Stawka is not None else 0
             vid = poz.vat_Id
 
-            total_netto += netto
-            total_vat += vat
+            total_netto_wal += netto_row_wal
+            total_vat_wal += vat_row_wal
 
             if vid == 100003:
                 has_reverse_charge = True
-                if 'oo' not in vat_summary: vat_summary['oo'] = Decimal('0.00')
-                vat_summary['oo'] += netto
+                has_np = True
+                if 'np' not in vat_summary: vat_summary['np'] = Decimal('0.00')
+                vat_summary['np'] += netto_row_wal
+            elif (stawka == 0 or stawka is None) and country != 'PL':
+                if country in eu_countries or country == 'EL':
+                    has_wdt = True
+                    if 'wdt' not in vat_summary: vat_summary['wdt'] = Decimal('0.00')
+                    vat_summary['wdt'] += netto_row_wal
+                else:
+                    has_export = True
+                    if 'export' not in vat_summary: vat_summary['export'] = Decimal('0.00')
+                    vat_summary['export'] += netto_row_wal
+            elif (stawka == 0 or stawka is None) and country == 'PL':
+                 if vid in [100002, 100005]:
+                    has_exempt = True
+                    if 'zw' not in vat_summary: vat_summary['zw'] = Decimal('0.00')
+                    vat_summary['zw'] += netto_row_wal
+                 else:
+                    if 0 not in vat_summary: vat_summary[0] = {'netto': Decimal('0.00'), 'vat': Decimal('0.00')}
+                    vat_summary[0]['netto'] += netto_row_wal
+                    vat_summary[0]['vat'] += vat_row_wal
             else:
                 if stawka not in vat_summary:
                     vat_summary[stawka] = {'netto': Decimal('0.00'), 'vat': Decimal('0.00')}
-                vat_summary[stawka]['netto'] += netto
-                vat_summary[stawka]['vat'] += vat
+                vat_summary[stawka]['netto'] += netto_row_wal
+                vat_summary[stawka]['vat'] += vat_row_wal
 
         if 23 in vat_summary:
             ET.SubElement(fa, 'P_13_1').text = f"{vat_summary[23]['netto']:.2f}"
@@ -137,65 +177,72 @@ class KsefGenerator:
                 ET.SubElement(fa, 'P_14_3W').text = f"{vat_pln:.2f}"
 
         if has_reverse_charge:
-            ET.SubElement(fa, 'P_13_5').text = f"{vat_summary['oo']:.2f}"
+            ET.SubElement(fa, 'P_13_5').text = f"{vat_summary['np']:.2f}"
 
         if 0 in vat_summary:
-            if country == 'PL':
-                ET.SubElement(fa, 'P_13_6_1').text = f"{vat_summary[0]['netto']:.2f}"
-            elif country in eu_countries:
-                ET.SubElement(fa, 'P_13_6_2').text = f"{vat_summary[0]['netto']:.2f}"
-            else:
-                ET.SubElement(fa, 'P_13_6_3').text = f"{vat_summary[0]['netto']:.2f}"
-        elif country != 'PL':
-            if country in eu_countries:
-                ET.SubElement(fa, 'P_13_6_2').text = f"{total_netto:.2f}"
-            else:
-                ET.SubElement(fa, 'P_13_6_3').text = f"{total_netto:.2f}"
+             ET.SubElement(fa, 'P_13_6_1').text = f"{vat_summary[0]['netto']:.2f}"
+        
+        if has_wdt:
+             ET.SubElement(fa, 'P_13_6_2').text = f"{vat_summary['wdt']:.2f}"
+        
+        if has_export:
+             ET.SubElement(fa, 'P_13_6_3').text = f"{vat_summary['export']:.2f}"
+        
+        if has_exempt:
+             ET.SubElement(fa, 'P_13_7').text = f"{vat_summary['zw']:.2f}"
 
-        ET.SubElement(fa, 'P_15').text = f"{(total_netto + total_vat):.2f}"
+        ET.SubElement(fa, 'P_15').text = f"{(total_netto_wal + total_vat_wal):.2f}"
 
         adn = ET.SubElement(fa, 'Adnotacje')
         ET.SubElement(adn, 'P_16').text = '1' if has_reverse_charge else '2'
         ET.SubElement(adn, 'P_17').text = '2'
         ET.SubElement(adn, 'P_18').text = '2'
         ET.SubElement(adn, 'P_18A').text = '2'
+        
+        zw_node = ET.SubElement(adn, 'Zwolnienie')
+        ET.SubElement(zw_node, 'P_19N').text = '1'
+        
+        nst_node = ET.SubElement(adn, 'NoweSrodkiTransportu')
+        ET.SubElement(nst_node, 'P_22N').text = '1'
+        
         ET.SubElement(adn, 'P_23').text = '2'
+        
+        marza_node = ET.SubElement(adn, 'PMarzy')
+        ET.SubElement(marza_node, 'P_PMarzyN').text = '1'
 
         ET.SubElement(fa, 'RodzajFaktury').text = 'VAT'
 
         for i, poz in enumerate(pozycje_sorted, 1):
             wiersz = ET.SubElement(fa, 'FaWiersz')
             ET.SubElement(wiersz, 'NrWierszaFa').text = str(i)
-            ET.SubElement(wiersz, 'UU_ID').text = str(uuid.uuid4())
+            ET.SubElement(wiersz, 'UU_ID').text = str(uuid.uuid4()).replace('-', '')[:16]
             ET.SubElement(wiersz, 'P_7').text = poz.tw_Nazwa if poz.tw_Nazwa else 'Towar/Usługa'
-            ET.SubElement(wiersz, 'P_8A').text = poz.ob_Jm
-            ET.SubElement(wiersz, 'P_8B').text = f"{Decimal(str(poz.ob_Ilosc)):.2f}"
+            ET.SubElement(wiersz, 'P_8A').text = poz.ob_Jm if poz.ob_Jm else 'szt'
+            ET.SubElement(wiersz, 'P_8B').text = f"{Decimal(str(poz.ob_Ilosc)):.3f}"
             
-            netto = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            netto_item = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             ilosc = Decimal(str(poz.ob_Ilosc))
-            cena_jednostkowa = (netto / ilosc).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP) if ilosc != 0 else Decimal('0.00')
+            cena_jedn = (netto_item / ilosc).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if ilosc != 0 else Decimal('0.00')
             
-            ET.SubElement(wiersz, 'P_9A').text = f"{cena_jednostkowa:.2f}"
-            ET.SubElement(wiersz, 'P_11').text = f"{netto:.2f}"
+            ET.SubElement(wiersz, 'P_9A').text = f"{cena_jedn:.2f}"
+            ET.SubElement(wiersz, 'P_11').text = f"{netto_item:.2f}"
             
-            # Rate determination logic
             stawka = poz.vat_Stawka
             vid = poz.vat_Id
             
             if vid == 100003:
-                rate_text = "oo"
+                if country in eu_countries or country == 'EL': p12 = 'np I'
+                else: p12 = 'np II'
+            elif vid in [100002, 100005]:
+                p12 = 'zw'
             elif stawka is not None and stawka > 0:
-                rate_text = f"{stawka:.0f}"
+                p12 = f"{stawka:.0f}"
             else:
-                # 0% or None
-                if country == 'PL':
-                    rate_text = "0 KR"
-                elif country in eu_countries:
-                    rate_text = "0 WDT"
-                else:
-                    rate_text = "0 EX"
+                if country == 'PL': p12 = '0 KR'
+                elif country in eu_countries or country == 'EL': p12 = '0 WDT'
+                else: p12 = '0 EX'
                     
-            ET.SubElement(wiersz, 'P_12').text = rate_text
+            ET.SubElement(wiersz, 'P_12').text = p12
             
             if kurs_nbp:
                 ET.SubElement(wiersz, 'KursWaluty').text = f"{kurs_nbp:.4f}"
