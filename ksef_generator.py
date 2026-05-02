@@ -42,7 +42,7 @@ class KsefGenerator:
         }).text = 'FA'
         ET.SubElement(nag, 'WariantFormularza').text = '3'
         ET.SubElement(nag, 'DataWytworzeniaFa').text = datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
-        ET.SubElement(nag, 'SystemInfo').text = 'SubiektGT-KSeF-Gen'
+        ET.SubElement(nag, 'SystemInfo').text = 'Bgieta-Ksef-Gen'
 
         p1 = ET.SubElement(root, 'Podmiot1')
         d_id1 = ET.SubElement(p1, 'DaneIdentyfikacyjne')
