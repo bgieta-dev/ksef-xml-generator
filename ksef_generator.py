@@ -3,6 +3,8 @@ from datetime import datetime
 import xml.dom.minidom as minidom
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
+import urllib.request
+import json
 
 class KsefGenerator:
     def __init__(self):
@@ -13,6 +15,18 @@ class KsefGenerator:
         }
         for prefix, uri in self.ns.items():
             ET.register_namespace(prefix, uri)
+
+    def _get_nbp_rate(self, currency_code):
+        if not currency_code or currency_code == 'PLN':
+            return None
+        try:
+            url = f"https://api.nbp.pl/api/exchangerates/rates/a/{currency_code}/?format=json"
+            with urllib.request.urlopen(url) as response:
+                data = json.loads(response.read().decode())
+                return Decimal(str(data['rates'][0]['mid']))
+        except Exception as e:
+            print(f"Błąd pobierania kursu NBP dla {currency_code}: {e}")
+            return None
 
     def generate(self, moja_firma, naglowek, tabela_vat, pozycje):
         root = ET.Element('Faktura', {
@@ -44,11 +58,12 @@ class KsefGenerator:
         country = naglowek.adr_SymbolKraju if naglowek.adr_SymbolKraju else 'PL'
         
         raw_nip = naglowek.adr_NIP.replace('-', '').replace(' ', '') if naglowek.adr_NIP else ''
+        eu_countries = ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE', 'SI', 'SK']
 
         if country == 'PL':
             clean_pl = raw_nip[2:] if raw_nip.upper().startswith('PL') else raw_nip
             ET.SubElement(d_id2, 'NIP').text = clean_pl
-        elif country in ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE', 'SI', 'SK']:
+        elif country in eu_countries:
             ET.SubElement(d_id2, 'KodUE').text = country
             ET.SubElement(d_id2, 'NrVatUE').text = raw_nip
         else:
@@ -64,8 +79,11 @@ class KsefGenerator:
         ET.SubElement(p2, 'GV').text = '2'
 
         fa = ET.SubElement(root, 'Fa')
-        ET.SubElement(fa, 'KodWaluty').text = naglowek.dok_Waluta if naglowek.dok_Waluta else 'PLN'
-        ET.SubElement(fa, 'P_1').text = naglowek.dok_DataWyst.strftime('%Y-%m-%d')
+        currency = naglowek.dok_Waluta if naglowek.dok_Waluta else 'PLN'
+        kurs_nbp = self._get_nbp_rate(currency)
+        
+        ET.SubElement(fa, 'KodWaluty').text = currency
+        ET.SubElement(fa, 'P_1').text = datetime.now().strftime('%Y-%m-%d')
         ET.SubElement(fa, 'P_1M').text = moja_firma.adr_Miejscowosc
         ET.SubElement(fa, 'P_2').text = naglowek.dok_NrPelny
         if naglowek.dok_DataMag:
@@ -100,14 +118,23 @@ class KsefGenerator:
         if 23 in vat_summary:
             ET.SubElement(fa, 'P_13_1').text = f"{vat_summary[23]['netto']:.2f}"
             ET.SubElement(fa, 'P_14_1').text = f"{vat_summary[23]['vat']:.2f}"
+            if kurs_nbp:
+                vat_pln = (vat_summary[23]['vat'] * kurs_nbp).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                ET.SubElement(fa, 'P_14_1W').text = f"{vat_pln:.2f}"
         
         if 8 in vat_summary:
             ET.SubElement(fa, 'P_13_2').text = f"{vat_summary[8]['netto']:.2f}"
             ET.SubElement(fa, 'P_14_2').text = f"{vat_summary[8]['vat']:.2f}"
+            if kurs_nbp:
+                vat_pln = (vat_summary[8]['vat'] * kurs_nbp).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                ET.SubElement(fa, 'P_14_2W').text = f"{vat_pln:.2f}"
 
         if 5 in vat_summary:
             ET.SubElement(fa, 'P_13_3').text = f"{vat_summary[5]['netto']:.2f}"
             ET.SubElement(fa, 'P_14_3').text = f"{vat_summary[5]['vat']:.2f}"
+            if kurs_nbp:
+                vat_pln = (vat_summary[5]['vat'] * kurs_nbp).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                ET.SubElement(fa, 'P_14_3W').text = f"{vat_pln:.2f}"
 
         if has_reverse_charge:
             ET.SubElement(fa, 'P_13_5').text = f"{vat_summary['oo']:.2f}"
@@ -115,12 +142,12 @@ class KsefGenerator:
         if 0 in vat_summary:
             if country == 'PL':
                 ET.SubElement(fa, 'P_13_6_1').text = f"{vat_summary[0]['netto']:.2f}"
-            elif country in ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE', 'SI', 'SK']:
+            elif country in eu_countries:
                 ET.SubElement(fa, 'P_13_6_2').text = f"{vat_summary[0]['netto']:.2f}"
             else:
                 ET.SubElement(fa, 'P_13_6_3').text = f"{vat_summary[0]['netto']:.2f}"
         elif country != 'PL':
-            if country in ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE', 'SI', 'SK']:
+            if country in eu_countries:
                 ET.SubElement(fa, 'P_13_6_2').text = f"{total_netto:.2f}"
             else:
                 ET.SubElement(fa, 'P_13_6_3').text = f"{total_netto:.2f}"
@@ -151,17 +178,27 @@ class KsefGenerator:
             ET.SubElement(wiersz, 'P_9A').text = f"{cena_jednostkowa:.2f}"
             ET.SubElement(wiersz, 'P_11').text = f"{netto:.2f}"
             
-            rate_text = f"{poz.vat_Stawka:.0f}" if poz.vat_Stawka is not None else "np"
-            if poz.vat_Id == 100003:
+            # Rate determination logic
+            stawka = poz.vat_Stawka
+            vid = poz.vat_Id
+            
+            if vid == 100003:
                 rate_text = "oo"
-            elif country == 'PL' and (poz.vat_Stawka == 0 or poz.vat_Stawka is None):
-                rate_text = "0 KR"
-            elif country != 'PL':
-                if country in ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE', 'SI', 'SK']:
+            elif stawka is not None and stawka > 0:
+                rate_text = f"{stawka:.0f}"
+            else:
+                # 0% or None
+                if country == 'PL':
+                    rate_text = "0 KR"
+                elif country in eu_countries:
                     rate_text = "0 WDT"
                 else:
                     rate_text = "0 EX"
+                    
             ET.SubElement(wiersz, 'P_12').text = rate_text
+            
+            if kurs_nbp:
+                ET.SubElement(wiersz, 'KursWaluty').text = f"{kurs_nbp:.4f}"
 
         raw_xml = ET.tostring(root, encoding='utf-8')
         parsed = minidom.parseString(raw_xml)
