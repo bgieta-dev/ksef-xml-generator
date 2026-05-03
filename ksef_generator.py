@@ -90,7 +90,10 @@ class KsefGenerator:
 
         fa = ET.SubElement(root, 'Fa')
         currency = naglowek.dok_Waluta if naglowek.dok_Waluta else 'PLN'
-        kurs_nbp = self._get_nbp_rate(currency)
+        # Kurs dokumentu z bazy (do przeliczeń)
+        kurs_dok = Decimal(str(naglowek.dok_WalutaKurs)) if naglowek.dok_WalutaKurs and currency != 'PLN' else Decimal('1.00')
+        # Kurs NBP tylko informacyjnie (jeśli inny niż na dokumencie)
+        kurs_nbp_inf = self._get_nbp_rate(currency)
         
         today = datetime.now()
         today_str = today.strftime('%Y-%m-%d')
@@ -117,8 +120,14 @@ class KsefGenerator:
         has_np = False
 
         for poz in pozycje_sorted:
-            netto_row_wal = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            vat_row_wal = Decimal(str(poz.ob_WartVat)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            # Wartości w bazie Subiekta są w PLN
+            netto_pln = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            vat_pln = Decimal(str(poz.ob_WartVat)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            
+            # Przeliczamy na walutę dokumentu
+            netto_row_wal = (netto_pln / kurs_dok).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            vat_row_wal = (vat_pln / kurs_dok).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            
             stawka = int(poz.vat_Stawka) if poz.vat_Stawka is not None else 0
             vid = poz.vat_Id
 
@@ -136,7 +145,6 @@ class KsefGenerator:
                     if 'wdt' not in vat_summary: vat_summary['wdt'] = Decimal('0.00')
                     vat_summary['wdt'] += netto_row_wal
                 else:
-                    # Every country not in eu_countries list goes here (Export)
                     has_export = True
                     if 'export' not in vat_summary: vat_summary['export'] = Decimal('0.00')
                     vat_summary['export'] += netto_row_wal
@@ -146,35 +154,34 @@ class KsefGenerator:
                     if 'zw' not in vat_summary: vat_summary['zw'] = Decimal('0.00')
                     vat_summary['zw'] += netto_row_wal
                  else:
-                    if 0 not in vat_summary: vat_summary[0] = {'netto': Decimal('0.00'), 'vat': Decimal('0.00')}
+                    if 0 not in vat_summary: vat_summary[0] = {'netto': Decimal('0.00'), 'vat': Decimal('0.00'), 'vat_pln': Decimal('0.00')}
                     vat_summary[0]['netto'] += netto_row_wal
                     vat_summary[0]['vat'] += vat_row_wal
+                    vat_summary[0]['vat_pln'] += vat_pln
             else:
                 if stawka not in vat_summary:
-                    vat_summary[stawka] = {'netto': Decimal('0.00'), 'vat': Decimal('0.00')}
+                    vat_summary[stawka] = {'netto': Decimal('0.00'), 'vat': Decimal('0.00'), 'vat_pln': Decimal('0.00')}
                 vat_summary[stawka]['netto'] += netto_row_wal
                 vat_summary[stawka]['vat'] += vat_row_wal
+                vat_summary[stawka]['vat_pln'] += vat_pln
 
         if 23 in vat_summary:
             ET.SubElement(fa, 'P_13_1').text = f"{vat_summary[23]['netto']:.2f}"
             ET.SubElement(fa, 'P_14_1').text = f"{vat_summary[23]['vat']:.2f}"
-            if kurs_nbp:
-                vat_pln = (vat_summary[23]['vat'] * kurs_nbp).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-                ET.SubElement(fa, 'P_14_1W').text = f"{vat_pln:.2f}"
+            if currency != 'PLN':
+                ET.SubElement(fa, 'P_14_1W').text = f"{vat_summary[23]['vat_pln']:.2f}"
         
         if 8 in vat_summary:
             ET.SubElement(fa, 'P_13_2').text = f"{vat_summary[8]['netto']:.2f}"
             ET.SubElement(fa, 'P_14_2').text = f"{vat_summary[8]['vat']:.2f}"
-            if kurs_nbp:
-                vat_pln = (vat_summary[8]['vat'] * kurs_nbp).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-                ET.SubElement(fa, 'P_14_2W').text = f"{vat_pln:.2f}"
+            if currency != 'PLN':
+                ET.SubElement(fa, 'P_14_2W').text = f"{vat_summary[8]['vat_pln']:.2f}"
 
         if 5 in vat_summary:
             ET.SubElement(fa, 'P_13_3').text = f"{vat_summary[5]['netto']:.2f}"
             ET.SubElement(fa, 'P_14_3').text = f"{vat_summary[5]['vat']:.2f}"
-            if kurs_nbp:
-                vat_pln = (vat_summary[5]['vat'] * kurs_nbp).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-                ET.SubElement(fa, 'P_14_3W').text = f"{vat_pln:.2f}"
+            if currency != 'PLN':
+                ET.SubElement(fa, 'P_14_3W').text = f"{vat_summary[5]['vat_pln']:.2f}"
 
         if has_reverse_charge:
             ET.SubElement(fa, 'P_13_5').text = f"{vat_summary['np']:.2f}"
@@ -216,6 +223,12 @@ class KsefGenerator:
             desc = ET.SubElement(fa, 'DodatkowyOpis')
             ET.SubElement(desc, 'Klucz').text = 'Informacja'
             ET.SubElement(desc, 'Wartosc').text = 'odwrotne obciążenie'
+        
+        # Dodajemy informację o aktualnym kursie NBP jeśli jest inny niż na dokumencie
+        if kurs_nbp_inf and currency != 'PLN' and abs(kurs_nbp_inf - kurs_dok) > Decimal('0.0001'):
+            desc_nbp = ET.SubElement(fa, 'DodatkowyOpis')
+            ET.SubElement(desc_nbp, 'Klucz').text = 'Kurs NBP (inf)'
+            ET.SubElement(desc_nbp, 'Wartosc').text = f"{kurs_nbp_inf:.4f}"
 
         for i, poz in enumerate(pozycje_sorted, 1):
             wiersz = ET.SubElement(fa, 'FaWiersz')
@@ -225,12 +238,15 @@ class KsefGenerator:
             ET.SubElement(wiersz, 'P_8A').text = poz.ob_Jm if poz.ob_Jm else 'szt'
             ET.SubElement(wiersz, 'P_8B').text = f"{Decimal(str(poz.ob_Ilosc)):.3f}"
             
-            netto_item = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            ilosc = Decimal(str(poz.ob_Ilosc))
-            cena_jedn = (netto_item / ilosc).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if ilosc != 0 else Decimal('0.00')
+            # Przeliczamy ceny z PLN na walutę
+            netto_item_pln = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            netto_item_wal = (netto_item_pln / kurs_dok).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             
-            ET.SubElement(wiersz, 'P_9A').text = f"{cena_jedn:.2f}"
-            ET.SubElement(wiersz, 'P_11').text = f"{netto_item:.2f}"
+            ilosc = Decimal(str(poz.ob_Ilosc))
+            cena_jedn_wal = (netto_item_wal / ilosc).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if ilosc != 0 else Decimal('0.00')
+            
+            ET.SubElement(wiersz, 'P_9A').text = f"{cena_jedn_wal:.2f}"
+            ET.SubElement(wiersz, 'P_11').text = f"{netto_item_wal:.2f}"
             
             stawka = poz.vat_Stawka
             vid = poz.vat_Id
@@ -249,8 +265,8 @@ class KsefGenerator:
                     
             ET.SubElement(wiersz, 'P_12').text = p12
             
-            if kurs_nbp:
-                ET.SubElement(wiersz, 'KursWaluty').text = f"{kurs_nbp:.4f}"
+            if currency != 'PLN':
+                ET.SubElement(wiersz, 'KursWaluty').text = f"{kurs_dok:.4f}"
 
         raw_xml = ET.tostring(root, encoding='utf-8')
         parsed = minidom.parseString(raw_xml)
