@@ -29,6 +29,7 @@ def pobierz_komplet_do_ksef(numer_faktury):
                 d.dok_DataWyst, d.dok_DataMag,
                 adr.adr_Nazwa, adr.adr_NIP, adr.adr_Miejscowosc, adr.adr_Adres, adr.adr_Kod, p.pa_KodPanstwaISO as adr_SymbolKraju,
                 d.dok_WartNetto, d.dok_WartVat, d.dok_WartBrutto,
+                d.dok_WartNettoWal, d.dok_WartVatWal, d.dok_WartBruttoWal,
                 d.dok_PlatTermin,
                 ISNULL(d.dok_Waluta, 'PLN') as dok_Waluta, d.dok_WalutaKurs
             FROM dok__Dokument d
@@ -36,6 +37,7 @@ def pobierz_komplet_do_ksef(numer_faktury):
             LEFT JOIN sl_Panstwo p ON adr.adr_IdPanstwo = p.pa_Id
             WHERE d.dok_NrPelny = ? AND d.dok_Typ = 2
         """
+
         cursor.execute(query_naglowek, numer_faktury)
         naglowek = cursor.fetchone()
 

@@ -91,14 +91,11 @@ class KsefGenerator:
         fa = ET.SubElement(root, 'Fa')
         currency = naglowek.dok_Waluta if naglowek.dok_Waluta else 'PLN'
         
-        # Pobieramy aktualny kurs NBP
-        kurs_nbp = self._get_nbp_rate(currency)
+        # Kurs dokumentu (bazy) - WYŁĄCZNIE do przeliczeń matematycznych
+        kurs_dok = Decimal(str(naglowek.dok_WalutaKurs)) if naglowek.dok_WalutaKurs and currency != 'PLN' else Decimal('1.00')
         
-        # Używamy kursu NBP jeśli dostępny, w przeciwnym razie kurs z dokumentu/bazy
-        if currency != 'PLN':
-            kurs_dok = kurs_nbp if kurs_nbp else Decimal(str(naglowek.dok_WalutaKurs))
-        else:
-            kurs_dok = Decimal('1.00')
+        # Pobieramy aktualny kurs NBP - WYŁĄCZNIE do tagu KursWaluty (informacyjnie)
+        kurs_nbp = self._get_nbp_rate(currency)
         
         today = datetime.now()
         today_str = today.strftime('%Y-%m-%d')
@@ -125,11 +122,11 @@ class KsefGenerator:
         has_np = False
 
         for poz in pozycje_sorted:
-            # Wartości w bazie Subiekta są w PLN
+            # Wartości w bazie są w PLN
             netto_pln = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             vat_pln = Decimal(str(poz.ob_WartVat)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             
-            # Przeliczamy na walutę dokumentu
+            # Przeliczamy na walutę używając kursu z bazy (rekonstrukcja kwoty oryginalnej)
             netto_row_wal = (netto_pln / kurs_dok).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             vat_row_wal = (vat_pln / kurs_dok).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             
@@ -237,11 +234,12 @@ class KsefGenerator:
             ET.SubElement(wiersz, 'P_8A').text = poz.ob_Jm if poz.ob_Jm else 'szt'
             ET.SubElement(wiersz, 'P_8B').text = f"{Decimal(str(poz.ob_Ilosc)):.3f}"
             
-            # Przeliczamy ceny z PLN na walutę
+            # Przeliczamy ceny z PLN na walutę używając kursu z bazy (rekonstrukcja kwoty oryginalnej)
             netto_item_pln = Decimal(str(poz.ob_WartNetto)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             netto_item_wal = (netto_item_pln / kurs_dok).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             
             ilosc = Decimal(str(poz.ob_Ilosc))
+            # Cena jednostkowa w walucie
             cena_jedn_wal = (netto_item_wal / ilosc).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if ilosc != 0 else Decimal('0.00')
             
             ET.SubElement(wiersz, 'P_9A').text = f"{cena_jedn_wal:.2f}"
@@ -264,8 +262,9 @@ class KsefGenerator:
                     
             ET.SubElement(wiersz, 'P_12').text = p12
             
-            if currency != 'PLN':
-                ET.SubElement(wiersz, 'KursWaluty').text = f"{kurs_dok:.4f}"
+            # Kurs NBP w tagu KursWaluty (informacyjnie, pobierany z internetu)
+            if currency != 'PLN' and kurs_nbp:
+                ET.SubElement(wiersz, 'KursWaluty').text = f"{kurs_nbp:.4f}"
 
         raw_xml = ET.tostring(root, encoding='utf-8')
         parsed = minidom.parseString(raw_xml)
