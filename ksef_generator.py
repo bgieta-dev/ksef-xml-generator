@@ -90,10 +90,15 @@ class KsefGenerator:
 
         fa = ET.SubElement(root, 'Fa')
         currency = naglowek.dok_Waluta if naglowek.dok_Waluta else 'PLN'
-        # Kurs dokumentu z bazy (do przeliczeń)
-        kurs_dok = Decimal(str(naglowek.dok_WalutaKurs)) if naglowek.dok_WalutaKurs and currency != 'PLN' else Decimal('1.00')
-        # Kurs NBP tylko informacyjnie (jeśli inny niż na dokumencie)
-        kurs_nbp_inf = self._get_nbp_rate(currency)
+        
+        # Pobieramy aktualny kurs NBP
+        kurs_nbp = self._get_nbp_rate(currency)
+        
+        # Używamy kursu NBP jeśli dostępny, w przeciwnym razie kurs z dokumentu/bazy
+        if currency != 'PLN':
+            kurs_dok = kurs_nbp if kurs_nbp else Decimal(str(naglowek.dok_WalutaKurs))
+        else:
+            kurs_dok = Decimal('1.00')
         
         today = datetime.now()
         today_str = today.strftime('%Y-%m-%d')
@@ -223,12 +228,6 @@ class KsefGenerator:
             desc = ET.SubElement(fa, 'DodatkowyOpis')
             ET.SubElement(desc, 'Klucz').text = 'Informacja'
             ET.SubElement(desc, 'Wartosc').text = 'odwrotne obciążenie'
-        
-        # Dodajemy informację o aktualnym kursie NBP jeśli jest inny niż na dokumencie
-        if kurs_nbp_inf and currency != 'PLN' and abs(kurs_nbp_inf - kurs_dok) > Decimal('0.0001'):
-            desc_nbp = ET.SubElement(fa, 'DodatkowyOpis')
-            ET.SubElement(desc_nbp, 'Klucz').text = 'Kurs NBP (inf)'
-            ET.SubElement(desc_nbp, 'Wartosc').text = f"{kurs_nbp_inf:.4f}"
 
         for i, poz in enumerate(pozycje_sorted, 1):
             wiersz = ET.SubElement(fa, 'FaWiersz')
