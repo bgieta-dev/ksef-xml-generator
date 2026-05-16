@@ -11,7 +11,7 @@ def pobierz_komplet_do_ksef(numer_faktury):
         cursor = conn.cursor()
 
         query_firma = """
-            SELECT adr_Nazwa, adr_NIP, adr_Miejscowosc, adr_Adres, adr_Kod, p.pa_KodPanstwaISO as adr_SymbolKraju
+            SELECT adr_NazwaPelna, adr_Nazwa, adr_NIP, adr_Miejscowosc, adr_Adres, adr_Kod, p.pa_KodPanstwaISO as adr_SymbolKraju
             FROM adr__Ewid a
             LEFT JOIN sl_Panstwo p ON a.adr_IdPanstwo = p.pa_Id
             WHERE a.adr_IdObiektu = 1 AND a.adr_TypAdresu = 8
@@ -27,7 +27,7 @@ def pobierz_komplet_do_ksef(numer_faktury):
             SELECT 
                 d.dok_Id, d.dok_NrPelny, 
                 d.dok_DataWyst, d.dok_DataMag,
-                adr.adr_Nazwa, adr.adr_NIP, adr.adr_Miejscowosc, adr.adr_Adres, adr.adr_Kod, p.pa_KodPanstwaISO as adr_SymbolKraju,
+                adr.adr_NazwaPelna, adr.adr_Nazwa, adr.adr_NIP, adr.adr_Miejscowosc, adr.adr_Adres, adr.adr_Kod, p.pa_KodPanstwaISO as adr_SymbolKraju,
                 d.dok_WartNetto, d.dok_WartVat, d.dok_WartBrutto,
                 d.dok_WartNettoWal, d.dok_WartVatWal, d.dok_WartBruttoWal,
                 d.dok_PlatTermin,
@@ -74,7 +74,7 @@ def pobierz_komplet_do_ksef(numer_faktury):
         gen = KsefGenerator()
         xml_data = gen.generate(moja_firma, naglowek, tabela_vat, pozycje)
 
-        filename = f"KSeF_{naglowek.dok_NrPelny.replace('/', '_')}.xml"
+        filename = f"KSeF_{naglowek.dok_NrPelny.replace('/', '_').replace(' ', '_')}.xml"
         gen.save(xml_data, filename)
 
         print(f"Sukces! Wygenerowano plik KSeF dla faktury {naglowek.dok_NrPelny}")
