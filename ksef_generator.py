@@ -109,12 +109,11 @@ class KsefGenerator:
         fa = ET.SubElement(root, 'Fa')
         currency = naglowek.dok_Waluta if naglowek.dok_Waluta else 'PLN'
         
-        # Data wystawienia KSeF (zawsze dzisiaj)
-        today = datetime.now()
-        data_wystawienia_ksef_str = today.strftime('%Y-%m-%d')
-        
-        # Pierwotne daty z dokumentu (do wyliczenia kursu)
+        # Data wystawienia z dokumentu
         data_wystawienia_orig = naglowek.dok_DataWyst if naglowek.dok_DataWyst else today
+        data_wystawienia_str = data_wystawienia_orig.strftime('%Y-%m-%d')
+        
+        # Data sprzedaży
         data_sprzedazy = naglowek.dok_DataMag if naglowek.dok_DataMag else data_wystawienia_orig
 
         # Kurs waluty bierzemy z ostatniego dnia roboczego przed WCZEŚNIEJSZĄ z dat pierwotnych
@@ -131,7 +130,7 @@ class KsefGenerator:
         kurs_nbp = self._get_nbp_rate(currency, data_do_kursu)
         
         ET.SubElement(fa, 'KodWaluty').text = currency
-        ET.SubElement(fa, 'P_1').text = data_wystawienia_ksef_str
+        ET.SubElement(fa, 'P_1').text = data_wystawienia_str
         ET.SubElement(fa, 'P_1M').text = moja_firma.adr_Miejscowosc
         ET.SubElement(fa, 'P_2').text = naglowek.dok_NrPelny.replace('Sprzedaż ', 'FS ') if naglowek.dok_NrPelny else ''
         if naglowek.dok_DataMag:
@@ -143,24 +142,24 @@ class KsefGenerator:
         total_netto_wal = Decimal('0.00')
         total_vat_wal = Decimal('0.00')
         has_reverse_charge = False
-        has_exempt = False
-        has_wdt = False
-
+        
+        # WDT i Eksport to często stawka 0% lub np w Subiekcie
+        # Przyjmujemy: 
+        # - stawka 0% + kraj inny niż PL = WDT/Eksport
+        # - stawka None (null) = Odwrotne Obciążenie (OO) lub np
+        
         for poz in pozycje_sorted:
             # Mapowanie stawek VAT z Subiekta na KSeF
             try:
                 if poz.vat_Stawka is not None:
-                    # Jeśli stawka jest liczbowa (np. 23.0)
                     val = float(poz.vat_Stawka)
                     if val == 0:
-                        # W Subiekcie 0 to może być 0%, zw lub np. 
-                        # Zakładamy mapowanie po nazwie stawki (nie mamy jej tu, więc uproszczenie)
-                        # Ale zazwyczaj 0.0 to po prostu "0"
                         st_vat = "0"
                     else:
                         st_vat = str(int(val))
                 else:
-                    st_vat = "np" # Domyślnie Nie Podlega
+                    st_vat = "oo" # Zakładamy że brak stawki w pozycjach to OO
+                    has_reverse_charge = True
             except:
                 st_vat = "np"
 
@@ -227,9 +226,10 @@ class KsefGenerator:
         if 'zw' in vat_summary:
             ET.SubElement(fa, 'P_13_6').text = f"{vat_summary['zw']['netto_wal']:.2f}"
             
-        # np (Nie podlegające / Eksport usług)
-        if 'np' in vat_summary:
-            ET.SubElement(fa, 'P_13_7').text = f"{vat_summary['np']['netto_wal']:.2f}"
+        # np / oo (Nie podlegające / Odwrotne Obciążenie / Eksport usług)
+        if 'np' in vat_summary or 'oo' in vat_summary:
+            s = vat_summary.get('np', vat_summary.get('oo'))
+            ET.SubElement(fa, 'P_13_7').text = f"{s['netto_wal']:.2f}"
 
         # Suma brutto (P_15) w walucie faktury
         total_brutto_wal = sum(v['netto_wal'] for v in vat_summary.values()) + sum(v['vat_wal'] for v in vat_summary.values())
@@ -239,18 +239,31 @@ class KsefGenerator:
         adnotacje = ET.SubElement(fa, 'Adnotacje')
         ET.SubElement(adnotacje, 'P_16').text = '2'
         ET.SubElement(adnotacje, 'P_17').text = '2'
-        ET.SubElement(adnotacje, 'P_18').text = '2'
+        ET.SubElement(adnotacje, 'P_18').text = '1' if has_reverse_charge else '2'
         ET.SubElement(adnotacje, 'P_18A').text = '2'
-        ET.SubElement(adnotacje, 'P_19').text = '2'
-        ET.SubElement(adnotacje, 'P_22').text = '2'
+        
+        zwolnienie = ET.SubElement(adnotacje, 'Zwolnienie')
+        ET.SubElement(zwolnienie, 'P_19N').text = '1'
+        
+        nst = ET.SubElement(adnotacje, 'NoweSrodkiTransportu')
+        ET.SubElement(nst, 'P_22N').text = '1'
+        
         ET.SubElement(adnotacje, 'P_23').text = '2'
-        ET.SubElement(adnotacje, 'P_PMarzy').text = '2'
+        
+        pmarzy = ET.SubElement(adnotacje, 'PMarzy')
+        ET.SubElement(pmarzy, 'P_PMarzyN').text = '1'
+
+        ET.SubElement(fa, 'RodzajFaktury').text = 'VAT'
 
         # Dane pozycji (FaWiersz)
         nr_poz = 1
         for poz in pozycje:
             wiersz = ET.SubElement(fa, 'FaWiersz')
             ET.SubElement(wiersz, 'NrWierszaFa').text = str(nr_poz)
+            
+            # UU_ID jest wymagane w FA(3)
+            ET.SubElement(wiersz, 'UU_ID').text = uuid.uuid4().hex[:16]
+
             ET.SubElement(wiersz, 'P_7').text = poz.tw_Nazwa if poz.tw_Nazwa else 'Towar/Usługa'
             ET.SubElement(wiersz, 'P_8A').text = poz.ob_Jm if poz.ob_Jm else 'szt'
             ET.SubElement(wiersz, 'P_8B').text = f"{poz.ob_Ilosc:.3f}"
@@ -266,10 +279,18 @@ class KsefGenerator:
             ET.SubElement(wiersz, 'P_11').text = f"{netto_wal_poz:.2f}"
             
             try:
-                st_vat = str(int(poz.vat_Stawka)) if poz.vat_Stawka is not None else "23"
+                if poz.vat_Stawka is not None:
+                    val = float(poz.vat_Stawka)
+                    if val == 0:
+                        # W FA(3) P_12 dla stawek 0% (WDT, Eksport) to często 0
+                        st_vat_poz = "0"
+                    else:
+                        st_vat_poz = str(int(val))
+                else:
+                    st_vat_poz = "np"
             except:
-                st_vat = "23"
-            ET.SubElement(wiersz, 'P_12').text = st_vat
+                st_vat_poz = "np"
+            ET.SubElement(wiersz, 'P_12').text = st_vat_poz
             
             # Kurs NBP w tagu KursWaluty (informacyjnie, pobierany z internetu)
             if currency != 'PLN' and kurs_nbp:
