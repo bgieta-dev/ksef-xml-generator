@@ -59,7 +59,7 @@ class KsefGenerator:
         d_id1 = ET.SubElement(p1, 'DaneIdentyfikacyjne')
         ET.SubElement(d_id1, 'NIP').text = moja_firma.adr_NIP.replace('-', '').replace(' ', '')
         
-        # Preferujemy pełną nazwę, jeśli brak to etykieta
+        # Nazwa musi być PO NIP w FA(3)
         nazwa_sprzedawcy = moja_firma.adr_NazwaPelna if hasattr(moja_firma, 'adr_NazwaPelna') and moja_firma.adr_NazwaPelna else moja_firma.adr_Nazwa
         ET.SubElement(d_id1, 'Nazwa').text = nazwa_sprzedawcy
         
@@ -71,10 +71,6 @@ class KsefGenerator:
         p2 = ET.SubElement(root, 'Podmiot2')
         d_id2 = ET.SubElement(p2, 'DaneIdentyfikacyjne')
         
-        # Preferujemy pełną nazwę nabywcy
-        nazwa_nabywcy = naglowek.adr_NazwaPelna if hasattr(naglowek, 'adr_NazwaPelna') and naglowek.adr_NazwaPelna else naglowek.adr_Nazwa
-        ET.SubElement(d_id2, 'Nazwa').text = nazwa_nabywcy
-
         raw_nip = naglowek.adr_NIP.replace('-', '').replace(' ', '') if naglowek.adr_NIP else ''
         eu_countries = ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PT', 'RO', 'SE', 'SI', 'SK']
         
@@ -90,6 +86,7 @@ class KsefGenerator:
 
         country = detected_country
 
+        # W FA(3) NIP/KodUE musi być PRZED Nazwą
         if country == 'PL':
             ET.SubElement(d_id2, 'NIP').text = raw_nip
         elif country in eu_countries:
@@ -98,6 +95,10 @@ class KsefGenerator:
         else:
             ET.SubElement(d_id2, 'KodKraju').text = country
             ET.SubElement(d_id2, 'NrID').text = raw_nip
+
+        # Nazwa nabywcy po identyfikatorach
+        nazwa_nabywcy = naglowek.adr_NazwaPelna if hasattr(naglowek, 'adr_NazwaPelna') and naglowek.adr_NazwaPelna else naglowek.adr_Nazwa
+        ET.SubElement(d_id2, 'Nazwa').text = nazwa_nabywcy
         
         adr2 = ET.SubElement(p2, 'Adres')
         ET.SubElement(adr2, 'KodKraju').text = country
@@ -142,23 +143,39 @@ class KsefGenerator:
         total_netto_wal = Decimal('0.00')
         total_vat_wal = Decimal('0.00')
         has_reverse_charge = False
-        
-        # WDT i Eksport to często stawka 0% lub np w Subiekcie
-        # Przyjmujemy: 
-        # - stawka 0% + kraj inny niż PL = WDT/Eksport
-        # - stawka None (null) = Odwrotne Obciążenie (OO) lub np
+        has_reverse_charge = False
+        has_wdt = False
+        has_export = False
         
         for poz in pozycje_sorted:
             # Mapowanie stawek VAT z Subiekta na KSeF
             try:
+                # tw_Rodzaj: 1=Towar, 2=Usługa
+                rodzaj = poz.tw_Rodzaj if hasattr(poz, 'tw_Rodzaj') else 1
+                
                 if poz.vat_Stawka is not None:
                     val = float(poz.vat_Stawka)
                     if val == 0:
-                        st_vat = "0"
+                        if rodzaj == 2:
+                            # Eksport usług / OO
+                            st_vat = "oo"
+                            has_reverse_charge = True
+                        elif country == 'PL':
+                            # OO krajowe
+                            st_vat = "oo"
+                            has_reverse_charge = True
+                        elif country in eu_countries:
+                            # WDT (FA3: P_13_6_2)
+                            st_vat = "wdt"
+                            has_wdt = True
+                        else:
+                            # Eksport towarów (FA3: P_13_6_3)
+                            st_vat = "export"
+                            has_export = True
                     else:
                         st_vat = str(int(val))
                 else:
-                    st_vat = "oo" # Zakładamy że brak stawki w pozycjach to OO
+                    st_vat = "oo"
                     has_reverse_charge = True
             except:
                 st_vat = "np"
@@ -192,7 +209,7 @@ class KsefGenerator:
             total_vat_wal += vat_wal
 
         # Sekcje sumaryczne VAT (P_13, P_14, P_15) w walucie faktury
-        # Mapowanie stawek FA(3): 1=23/22, 2=8/7, 3=5, 4=4, 5=0, 6=zw, 7=np
+        # Mapowanie stawek FA(3)
         
         # 23% / 22%
         if '23' in vat_summary or '22' in vat_summary:
@@ -218,9 +235,17 @@ class KsefGenerator:
             if currency != 'PLN':
                 ET.SubElement(fa, 'P_14_3W').text = f"{s['vat_pln']:.2f}"
 
-        # 0%
+        # 0% Krajowe (P_13_5)
         if '0' in vat_summary:
             ET.SubElement(fa, 'P_13_5').text = f"{vat_summary['0']['netto_wal']:.2f}"
+
+        # WDT (FA3: P_13_6_2)
+        if 'wdt' in vat_summary:
+            ET.SubElement(fa, 'P_13_6_2').text = f"{vat_summary['wdt']['netto_wal']:.2f}"
+
+        # Export (FA3: P_13_6_3)
+        if 'export' in vat_summary:
+            ET.SubElement(fa, 'P_13_6_3').text = f"{vat_summary['export']['netto_wal']:.2f}"
 
         # zw (Zwolnione)
         if 'zw' in vat_summary:
@@ -228,8 +253,12 @@ class KsefGenerator:
             
         # np / oo (Nie podlegające / Odwrotne Obciążenie / Eksport usług)
         if 'np' in vat_summary or 'oo' in vat_summary:
-            s = vat_summary.get('np', vat_summary.get('oo'))
-            ET.SubElement(fa, 'P_13_7').text = f"{s['netto_wal']:.2f}"
+            total_np_oo = Decimal('0.00')
+            if 'np' in vat_summary:
+                total_np_oo += vat_summary['np']['netto_wal']
+            if 'oo' in vat_summary:
+                total_np_oo += vat_summary['oo']['netto_wal']
+            ET.SubElement(fa, 'P_13_7').text = f"{total_np_oo:.2f}"
 
         # Suma brutto (P_15) w walucie faktury
         total_brutto_wal = sum(v['netto_wal'] for v in vat_summary.values()) + sum(v['vat_wal'] for v in vat_summary.values())
@@ -278,18 +307,29 @@ class KsefGenerator:
             ET.SubElement(wiersz, 'P_9A').text = f"{cena_wal_poz:.2f}"
             ET.SubElement(wiersz, 'P_11').text = f"{netto_wal_poz:.2f}"
             
+            # W FA(3) dla OO P_12 powinno być zgodne ze stawką (np. 'oo' lub 'np')
+            # Ale jeśli to jest OO, to raportujemy st_vat (które jest 'oo' lub 'np' lub numerem)
+            # Stawka 0% dla WDT/Export musi być raportowana jako "0"
+            
+            # Ponownie przeliczamy st_vat dla konkretnego wiersza
             try:
+                rodzaj_poz = poz.tw_Rodzaj if hasattr(poz, 'tw_Rodzaj') else 1
                 if poz.vat_Stawka is not None:
                     val = float(poz.vat_Stawka)
                     if val == 0:
-                        # W FA(3) P_12 dla stawek 0% (WDT, Eksport) to często 0
-                        st_vat_poz = "0"
+                        if rodzaj_poz == 2 or country == "PL":
+                            st_vat_poz = "oo"
+                        elif country in eu_countries:
+                            st_vat_poz = "0 WDT"
+                        else:
+                            st_vat_poz = "0 EX"
                     else:
                         st_vat_poz = str(int(val))
                 else:
-                    st_vat_poz = "np"
+                    st_vat_poz = "oo"
             except:
                 st_vat_poz = "np"
+
             ET.SubElement(wiersz, 'P_12').text = st_vat_poz
             
             # Kurs NBP w tagu KursWaluty (informacyjnie, pobierany z internetu)

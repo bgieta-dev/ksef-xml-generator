@@ -62,7 +62,7 @@ def pobierz_komplet_do_ksef(numer_faktury):
             SELECT 
                 t.tw_Nazwa, p.ob_Ilosc, p.ob_Jm, 
                 p.ob_CenaNetto, p.ob_WartNetto, p.ob_WartVat, p.ob_WartBrutto,
-                v.vat_Id, v.vat_Stawka
+                v.vat_Id, v.vat_Stawka, t.tw_Rodzaj
             FROM dok_Pozycja p
             LEFT JOIN tw__Towar t ON p.ob_TowId = t.tw_Id
             JOIN sl_StawkaVAT v ON p.ob_VatId = v.vat_Id
