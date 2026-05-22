@@ -1,43 +1,44 @@
 # Subiekt GT -> KSeF XML Generator (FA(3))
 
-Prosty skrypt do wyciągania danych z bazy Subiekta GT (MSSQL) i generowania plików XML zgodnych ze strukturą **FA(3)** dla KSeF.
+Lekki skrypt ETL do generowania e-Faktur. 
 
-## Jak to ugryźć?
+## 🛠 Szybki Start
+1. `.env`: `DB_SERVER`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
+2. Uruchom: `python main.py` (pobiera najnowszą FS z bazy).
 
-1. **Wymagania**: Musisz mieć zainstalowane `pyodbc` (do bazy) i `python-dotenv` (do konfiguracji). Wszystko jest w `requirements.txt`.
-2. **Konfiguracja**:
-   - Skopiuj plik `.env.example` i zmień mu nazwę na `.env`.
-   - Wpisz tam dane do swojej bazy (IP serwera, nazwa bazy, użytkownik SQL).
-3. **Uruchomienie**:
-   - Żeby zobaczyć ostatnie 10 faktur i sprawdzić czy połączenie działa, odpal: `python list_invoices.py`.
-   - Żeby wygenerować XML dla najnowszej faktury, odpal: `python main.py`.
+---
 
-## Logika generowania XML FA(3) (Stan na 2026-05-19)
+## 🧠 Kompendium Wiedzy (Dla Dewelopera / Serwisu)
 
-Generator został dostosowany do oficjalnych przykładów MF dla struktury logicznej FA(3).
+### 1. Źródła Danych (MSSQL - Subiekt GT)
+*   **Nagłówek**: `dok__Dokument`. Kluczowe pola: `dok_WalutaKurs`, `dok_WartNettoWal`.
+*   **Pozycje**: `dok_Pozycja`. Uwaga: W Subiekcie pozycje są **zawsze w PLN**.
+*   **Kartoteki**: `tw__Towar`. Pole `tw_Rodzaj`: 1=Towar, 2=Usługa.
+*   **VAT**: `sl_StawkaVAT`. Pole `vat_Symbol`: "np", "zw", "23" itd.
 
-### 1. Mapowanie Rodzajów Transakcji (Stawka 0%)
-Dla pozycji ze stawką 0% system stosuje inteligentne rozróżnienie na podstawie kraju kontrahenta i rodzaju kartoteki (`tw_Rodzaj`):
+### 2. Logika Biznesowa (Gdzie szukać przyczyn?)
+*   **Problem z kwotami?** -> `ksef_generator.py`. Szukaj `kurs_dok`. Kwoty walutowe są REKONSTRUOWANE przez `PLN / kurs_dok`. Jeśli w XML jest np. 470.23 zamiast 470.00, sprawdź czy do obliczeń nie został użyty `kurs_nbp`.
+*   **Błędny koszyk VAT (np. WDT zamiast OO)?** -> Sprawdź metodę `generate()`. Klasyfikacja zależy od: `tw_Rodzaj`, `vat_Symbol`, kraju nabywcy i heurystyki nazw (słowa "transport"/"shipping" wymuszają OO).
+*   **Błąd "indices must be integers"?** -> To błąd typów `pyodbc.Row` vs `dict`. Rozwiązanie to metoda `_get_val()` w generatorze – używaj jej zawsze do pobierania jakiejkolwiek wartości.
 
-- **WDT (Wewnątrzwspólnotowa Dostawa Towarów)**:
-  - Warunek: Towar (Rodzaj 1) + Kraj UE (poza PL) + Stawka 0%.
-  - KSeF: Pole `<P_13_6_2>`, Wiersz `<P_12>0 WDT</P_12>`, Adnotacja `P_18=2`.
-- **Eksport Towarów**:
-  - Warunek: Towar (Rodzaj 1) + Kraj poza UE + Stawka 0%.
-  - KSeF: Pole `<P_13_6_3>`, Wiersz `<P_12>0 EX</P_12>`, Adnotacja `P_18=2`.
-- **Odwrotne Obciążenie (OO / Eksport Usług)**:
-  - Warunek: Usługa (Rodzaj 2) + dowolny kraj + Stawka 0% LUB dowolny rodzaj + Kraj PL + Stawka 0% LUB brak stawki (null).
-  - KSeF: Pole `<P_13_7>`, Wiersz `<P_12>oo</P_12>`, Adnotacja **`P_18=1`**.
+### 3. Mapa Koszyków FA(3)
+| Typ Transakcji | Pole XML | Adnotacja P_18A | Stawka P_12 |
+| :--- | :--- | :--- | :--- |
+| Eksport Usług / OO / NP | `P_13_5` | **1** | `oo` |
+| WDT | `P_13_6_2` | 2 | `0 WDT` |
+| Eksport Towarów | `P_13_6_3` | 2 | `0 EX` |
+| Krajowa 0% | `P_13_4` | 2 | `0` |
+| Zwolnione | `P_13_7` | 2 | `zw` |
 
-### 2. Transakcje Krajowe (Standard)
-- Stawki 23%, 8%, 5% są mapowane odpowiednio do `P_13_1/P_14_1`, `P_13_2/P_14_2`, `P_13_3/P_14_3`.
-- `P_12` w wierszu zawiera wartość liczbową (np. "23").
+### 4. Obsługa Walut (Krytyczne!)
+*   **Obliczenia**: Tylko kurs z bazy (`dok_WalutaKurs`).
+*   **Tag <KursWaluty>**: Tylko kurs z API NBP (wyłącznie informacja).
+*   **VAT w PLN**: Pole `P_14_xW` musi zawierać wartość z bazy Subiekta (`ob_WartVat`).
 
-### 3. Wymogi Techniczne i Strukturalne
-- **Kolejność elementów**: W sekcji `DaneIdentyfikacyjne` identyfikatory (NIP/KodUE/NrID) są zawsze przed nazwą podmiotu (wymóg XSD).
-- **UU_ID**: Każdy wiersz faktury posiada unikalny 16-znakowy identyfikator.
-- **Data (P_1)**: Używana jest data wystawienia z dokumentu źródłowego.
-- **Adnotacje**: Pola P_19, P_22, P_PMarzy są elementami strukturalnymi (np. `<Zwolnienie><P_19N>1</P_19N></Zwolnienie>`).
-- **Waluty**: Przy walutach obcych generator pobiera kurs NBP z dnia roboczego poprzedzającego zdarzenie i dodaje tag `KursWaluty` w wierszach.
+### 5. Rozwiązywanie Problemów (FAQ)
+*   **Błąd 500 w przeglądarce?** -> Sprawdź logi Flask/serwera. Prawdopodobnie brak `pyodbc` w środowisku serwera lub brak dostępu do `.env`.
+*   **Brak połączenia?** -> Sprawdź `config.py`. Wymagany `ODBC Driver 18`. Jeśli serwer nie ma SSL, flagi `Encrypt=no;TrustServerCertificate=yes` są obowiązkowe.
+*   **Niewłaściwa nazwa firmy?** -> KSeF wymaga najpierw NIP, potem Nazwy. Kod dba o tę kolejność.
 
-Pliki XML lądują w głównym folderze z nazwą typu `KSeF_FS_123_2026.xml`.
+---
+*Ostatnia stabilna wersja: 2026-05-22. Autor: Gemini CLI.*
